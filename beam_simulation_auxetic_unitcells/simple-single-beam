@@ -1,0 +1,131 @@
+#returns a plot and pinch ratio related values
+import numpy as np
+import matplotlib.pyplot as plt
+import networkx as nx
+from scipy.sparse.linalg import spsolve
+from scipy.sparse import lil_matrix
+
+def create_truss_structure(width, height, concavity, ratio_height):
+    #creates truss structure by defining points and connectS
+    points = np.array([
+        [0, 0],
+        [width, 0],
+        [width - concavity * width, height * ratio_height],
+        [width, height],
+        [0, height],
+        [0 + concavity * width, height * ratio_height]
+    ])
+
+
+    G = nx.Graph()
+    for i, (x, y) in enumerate(points):
+        G.add_node(i, pos=(x, y))
+
+    for i in range(len(points) - 1):
+        G.add_edge(i, i + 1)
+    G.add_edge(len(points) - 1, 0)
+
+    return G, points
+#Computes the 4x4 local stiffness matrix 
+def beam_stiffness_matrix(L, A, E, I, theta):
+    
+    c, s = np.cos(theta), np.sin(theta)
+    k = np.array([
+        [ A*E/L, 0, -A*E/L, 0 ],
+        [ 0, 12*E*I/L**3, 0, -12*E*I/L**3 ],
+        [-A*E/L, 0, A*E/L, 0 ],
+        [ 0, -12*E*I/L**3, 0, 12*E*I/L**3 ]
+    ])
+
+    #to glocbal
+    T = np.array([
+        [c, s, 0, 0],
+        [-s, c, 0, 0],
+        [0, 0, c, s],
+        [0, 0, -s, c]
+    ])
+
+    return T.T @ k @ T  #  global coordinates
+
+def assemble_global_stiffness(G, points, A, E, I):
+    # global stiffness matrix."""
+    n = len(points)
+    dof = n * 2  # 2 DOFs per node (x, y)
+    K_global = lil_matrix((dof, dof))  # sparse matrix
+
+    for i, j in G.edges():
+        p1, p2 = points[i], points[j]
+        L = np.linalg.norm(p2 - p1)  # bbeam length
+        theta = np.arctan2(p2[1] - p1[1], p2[0] - p1[0])  # angle
+        k_local = beam_stiffness_matrix(L, A, E, I, theta)
+
+        # Global DOF indices
+        indices = [2*i, 2*i+1, 2*j, 2*j+1]
+        for a in range(4):
+            for b in range(4):
+                K_global[indices[a], indices[b]] += k_local[a, b]
+
+    return K_global
+
+def apply_boundary_conditions(K, F, fixed_nodes):
+    #Fixes displacements to zeros
+    for node in fixed_nodes:
+        dof_x, dof_y = 2*node, 2*node + 1
+        K[dof_x, :] = 0
+        K[:, dof_x] = 0
+        K[dof_x, dof_x] = 1
+        K[dof_y, :] = 0
+        K[:, dof_y] = 0
+        K[dof_y, dof_y] = 1
+        F[dof_x] = 0
+        F[dof_y] = 0
+    return K, F
+#, points, A=5e-7, E=162e6, I=1e-6,
+def solve_truss(G, points, A=5e-7, E=162e8, I=41e-3, fixed_nodes=[0], force_nodes=[3, 4], force_magnitude=-2000):
+    
+    K = assemble_global_stiffness(G, points, A, E, I).tocsc()
+    F = np.zeros(len(points) * 2)  # Force vector
+    for node in force_nodes:
+        F[2 * node + 1] = force_magnitude  # Apply force in Y-direction
+
+    # Apply boundary conditions
+    K, F = apply_boundary_conditions(K, F, fixed_nodes)
+
+    # solve Ku = F
+    displacements = spsolve(K, F)
+    return displacements.reshape(-1, 2)
+
+def plot_deformed_truss(G, points, displacements, scale=1):
+    #new_points = points + scale * displacements  # Scale factor for visibility
+    new_points = points + scale * np.array([displacements[:, 0], -displacements[:, 1]]).T
+
+    plt.figure(figsize=(6, 6))
+
+    for i, j in G.edges():
+        x_orig, y_orig = zip(*[points[i], points[j]])
+        x_def, y_def = zip(*[new_points[i], new_points[j]])
+        plt.plot(x_orig, y_orig, 'k--', alpha=0.5)  # Original structure
+        plt.plot(x_def, y_def, 'r-')  # Deformed shape
+
+    plt.scatter(points[:, 0], points[:, 1], color='blue', label='Original')
+    plt.scatter(new_points[:, 0], new_points[:, 1], color='red', label='Deformed')
+    plt.legend()
+    plt.show()
+    return new_points
+
+
+
+#rUNNIng herE
+width, height, concavity, ratio_height = 0.02,0.01, 0.48, 0.5
+G, points = create_truss_structure(width, height, concavity, ratio_height)
+
+displacements = solve_truss(G, points)
+new_points=plot_deformed_truss(G, points, displacements)
+
+transverse_strain = (new_points[2][0] - new_points[5][0]) -(points[2][0] - points[5][0]) /(points[2][0] - points[5][0])
+transverse_strain =(((new_points[2][0] - new_points[5][0])-(points[2][0] - points[5][0]))/(points[2][0] - points[5][0]))
+axial_strain = (new_points[4][1] - points[4][1])/(points[4][1])
+print(axial_strain)
+print(transverse_strain)
+poisson= -transverse_strain/axial_strain
+print(poisson)
